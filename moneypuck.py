@@ -1,4 +1,5 @@
 from enum import Enum
+import re
 import pandas as pd
 from requests import Response, get, exceptions
 import utils
@@ -56,7 +57,8 @@ def mp_command(args):
         return
     
     nationStats = getNationStats(args.year, nationality=args.nation, situation=args.situation)
-    print(nationStats)
+    with pd.option_context('display.precision', 3):
+        print(nationStats)
 
 
 def getPlayer(id: int):
@@ -80,35 +82,38 @@ def getSkatersStats(year: int):
 
 def getNationStats(year: int, nationality:str='fin', situation:str='all'):
     skatersStats = getSkatersStats(year)
-    # print(skatersStats)
 
     players = getNationPlayers(nationality)
     playerIds = players.index.to_list()
     nationStats = skatersStats.loc[(skatersStats["situation"] == situation) & skatersStats.index.isin(playerIds)]
-    # print(finStats[['name', 'I_F_goals', 'OnIce_F_xGoals', 'OnIce_A_xGoals']])
-    # print(finStats.loc[8477499])
     nationStats = nationStats[
         [
-            "name",
-            "games_played",
-            "icetime",
+            'name',
+            'games_played',
+            'icetime',
+            'onIce_xGoalsPercentage',
+            'offIce_xGoalsPercentage',
+            'onIce_corsiPercentage',
+            'offIce_corsiPercentage',
+            'onIce_fenwickPercentage',
+            'offIce_fenwickPercentage',
+            'iceTimeRank',
             "gameScore",
             "I_F_points",
             "I_F_goals",
             "I_F_primaryAssists",
             "I_F_secondaryAssists",
-            "OnIce_F_xGoals",
-            "OnIce_A_xGoals",
+            # "OnIce_F_xGoals",
+            # "OnIce_A_xGoals",
         ]
     ]
-
-    nationStats["point_per_game"] = nationStats["I_F_points"] / nationStats["games_played"]
-    nationStats["point_per_60"] = nationStats["I_F_points"] / (nationStats["icetime"] / (60 * 60))
-    nationStats["score_per_game"] = nationStats["gameScore"] / nationStats["games_played"]
+    nationStats["points_per_game"] = nationStats["I_F_points"] / nationStats["games_played"]
+    nationStats["points_per_60"] = nationStats["I_F_points"] / (nationStats["icetime"] / (60 * 60))
+    # nationStats["score_per_game"] = nationStats["gameScore"] / nationStats["games_played"]
     nationStats["score_per_60"] = nationStats["gameScore"] / (nationStats["icetime"] / (60 * 60))
 
     # nationStats = nationStats.sort_values("score_per_game", ascending=False)
-    nationStats = nationStats.sort_values("point_per_60", ascending=False)
+    nationStats = nationStats.sort_values("points_per_60", ascending=False)
 
     total_points = nationStats["I_F_points"].sum()
     total_score = nationStats["gameScore"].sum()
@@ -119,8 +124,34 @@ def getNationStats(year: int, nationality:str='fin', situation:str='all'):
     nationStats['icetime'] = nationStats['icetime'] / nationStats["games_played"]
     nationStats['icetime'] = nationStats['icetime'].apply(lambda x: formatToMinutes(int(x)))
     print(
-        f"SUMMARY: {len(nationStats.index)} {total_games_played} {total_points} {total_points_per_game} {total_score_per_game}"
+        f"SUMMARY: players={len(nationStats.index)}, games={total_games_played}, points={int(total_points)}, points/game={total_points_per_game:.3f}, score/game={total_score_per_game:.3f}"
     )
+
+    nationStats = rename_columns(nationStats)
+    nationStats = nationStats.astype({'points': 'int32', 'goals': 'int32', '1stAssists': 'int32', '2ndAssists': 'int32'})
+
+    nationStats = nationStats[
+        [
+            'name',
+            'games',
+            'icetime',
+            "points",
+            "goals",
+            "1stAssists",
+            "2ndAssists",
+            "points/60",
+            'score/60',
+            'onIce_xGoals%',
+            'offIce_xGoals%',
+            # 'onIce_corsi%',
+            # 'offIce_corsi%',
+            # 'onIce_fenwick%',
+            # 'offIce_fenwick%',
+        ]
+    ]
+
+    nationStats = nationStats.loc[nationStats['games'] >= 10]
+
     return nationStats
 
 
@@ -189,3 +220,23 @@ def update_skaters(year: int = None):
 def formatToMinutes(seconds):
     minutes, seconds = divmod(seconds, 60)
     return f'{minutes:02}:{seconds:02}'
+
+def rename_columns(df):
+    subs = [
+        [r'^I_F_', ''],
+        [r'_per_', '/'],
+        [r'primary', '1st'],
+        [r'secondary', '2nd'],
+        [r'games_played', 'games'],
+        [r'Percentage', '%']
+    ] 
+
+    newColumns = {}
+    for name in df.columns.values:
+        newName = name
+        for sub in subs:
+            newName = re.sub(sub[0], sub[1], newName)
+
+        newColumns[name] = newName
+
+    return df.rename(columns=newColumns)
