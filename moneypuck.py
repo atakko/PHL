@@ -1,3 +1,4 @@
+from typing import List
 from enum import Enum
 import re
 import pandas as pd
@@ -34,9 +35,14 @@ def add_parser(subparsers):
         const=UpdateTarget.skaters,
         help="Download new MoneyPuck files. You can set year (-y) for a specific year, by default current year.",
     )
-    mp_parser.add_argument("-y", "--year", type=int, dest="year", default=utils.current_nhl_year(), help="Target year")
+    mp_parser.add_argument("-y", "--year", nargs='+', type=int, action='store', dest="year", default=utils.current_nhl_year(), help="Target year")
     mp_parser.add_argument("-s", "--situation", type=str, dest="situation", default='all', help="On-ice situation: all, 5on5...")
     mp_parser.add_argument("-n", "--nation", type=str, dest="nation", default='fin', help="Nation, e.g. fin, swe, can...")
+    mp_parser.add_argument("-p", "--player", type=int, dest="player", help="Player ID")
+    mp_parser.add_argument("-t", "--take", type=int, dest="take", help="Number of players")
+    mp_parser.add_argument("-c", "--column", type=str, dest="sortColumn", help="The column rows are sorted by")
+    mp_parser.add_argument("-a", "--ascending", type=bool, default=False, dest="sortAscending", help="Sort ascending")
+    mp_parser.add_argument("-g", "--group", type=str, dest="groupBy", help="Group by")
     mp_parser.set_defaults(func=mp_command)
 
 
@@ -55,10 +61,15 @@ def mp_command(args):
                 print(f'Invalid update target: {args.update_target}')
         # Exit
         return
-    
-    nationStats = getNationStats(args.year, nationality=args.nation, situation=args.situation)
-    with pd.option_context('display.precision', 3):
-        print(nationStats)
+
+    if (args.player):
+        stats = getSkatersStats(args.player, args.year, nationality=args.nation, situation=args.situation)
+        with pd.option_context('display.precision', 3):
+            print(stats)
+    else:
+        nationStats = getNationStats(args.year, nationality=args.nation, situation=args.situation)
+        with pd.option_context('display.precision', 3):
+            print(nationStats)
 
 
 def getPlayer(id: int):
@@ -73,22 +84,46 @@ def getNationPlayers(nationality:str):
     return players
 
 
-def getSkatersStats(year: int):
+def getRawSkatersStats(year: int):
     df = pd.read_csv(MP_ROOT + f"skaters-{year}.csv", index_col="playerId")
     # for x in list(allStats.columns.values):
     #     print(x)
     return df
 
-
-def getNationStats(year: int, nationality:str='fin', situation:str='all'):
-    skatersStats = getSkatersStats(year)
-
+def getNationStats(year: int|List[int], nationality:str='fin', situation:str='all'):
     players = getNationPlayers(nationality)
     playerIds = players.index.to_list()
-    nationStats = skatersStats.loc[(skatersStats["situation"] == situation) & skatersStats.index.isin(playerIds)]
-    nationStats = nationStats[
+    return getSkatersStats(playerIds, year, nationality, situation)
+
+
+def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:str='fin', situation:str='all'):
+    if isinstance(playerIds, int):
+        playerIds = [playerIds]
+    if isinstance(years, int):
+        years = [years]
+
+    sortColumn = 'score_per_60'
+    sortAscending = False
+    multiYear = False
+
+    if len(years) > 1:
+        multiYear = True
+
+    rawSkatersStats = getRawSkatersStats(years[0])
+    if multiYear:
+        for i in range(years[0] + 1, years[1] + 1):
+            rawSkatersStats = pd.concat([rawSkatersStats, getRawSkatersStats(i)])
+    
+    if len(playerIds) == 1:
+        # sortColumn = 'I_F_points'
+        sortColumn = 'season'
+
+    skatersStats = rawSkatersStats.loc[(rawSkatersStats['situation'] == situation) & rawSkatersStats.index.isin(playerIds)]
+    skatersStats = skatersStats[
         [
+            'season',
             'name',
+            'position',
             'games_played',
             'icetime',
             'onIce_xGoalsPercentage',
@@ -103,46 +138,53 @@ def getNationStats(year: int, nationality:str='fin', situation:str='all'):
             "I_F_goals",
             "I_F_primaryAssists",
             "I_F_secondaryAssists",
-            # "OnIce_F_xGoals",
-            # "OnIce_A_xGoals",
+            "OnIce_F_xGoals",
+            "OnIce_F_goals",
+            "OnIce_A_xGoals",
+            "OnIce_A_goals",
         ]
     ]
-    nationStats["points_per_game"] = nationStats["I_F_points"] / nationStats["games_played"]
-    nationStats["points_per_60"] = nationStats["I_F_points"] / (nationStats["icetime"] / (60 * 60))
-    # nationStats["score_per_game"] = nationStats["gameScore"] / nationStats["games_played"]
-    nationStats["score_per_60"] = nationStats["gameScore"] / (nationStats["icetime"] / (60 * 60))
+    skatersStats["points_per_g"] = skatersStats["I_F_points"] / skatersStats["games_played"]
+    skatersStats["points_per_60"] = skatersStats["I_F_points"] / (skatersStats["icetime"] / (60 * 60))
+    skatersStats["score_per_60"] = skatersStats["gameScore"] / (skatersStats["icetime"] / (60 * 60))
 
-    # nationStats = nationStats.sort_values("score_per_game", ascending=False)
-    nationStats = nationStats.sort_values("points_per_60", ascending=False)
+    skatersStats = skatersStats.sort_values(sortColumn, ascending=sortAscending)
 
-    total_points = nationStats["I_F_points"].sum()
-    total_score = nationStats["gameScore"].sum()
-    total_games_played = nationStats["games_played"].sum()
+    total_points = skatersStats["I_F_points"].sum()
+    total_score = skatersStats["gameScore"].sum()
+    total_games_played = skatersStats["games_played"].sum()
     total_points_per_game = total_points / total_games_played
     total_score_per_game = total_score / total_games_played
 
-    nationStats['icetime'] = nationStats['icetime'] / nationStats["games_played"]
-    nationStats['icetime'] = nationStats['icetime'].apply(lambda x: formatToMinutes(int(x)))
+    skatersStats['time/g'] = skatersStats['icetime'] / skatersStats["games_played"]
+    skatersStats['time/g'] = skatersStats['time/g'].apply(lambda x: formatToMinutes(int(x)))
     print(
-        f"SUMMARY: players={len(nationStats.index)}, games={total_games_played}, points={int(total_points)}, points/game={total_points_per_game:.3f}, score/game={total_score_per_game:.3f}"
+        f"SUMMARY: players={len(skatersStats.index)}, games={total_games_played}, points={int(total_points)}, points/game={total_points_per_game:.3f}, score/game={total_score_per_game:.3f}"
     )
 
-    nationStats = rename_columns(nationStats)
-    nationStats = nationStats.astype({'points': 'int32', 'goals': 'int32', '1stAssists': 'int32', '2ndAssists': 'int32'})
+    skatersStats = rename_columns(skatersStats)
+    skatersStats = skatersStats.astype({'points': 'int32', 'goals': 'int32', '1stA': 'int32', '2ndA': 'int32'})
 
-    nationStats = nationStats[
+    skatersStats = skatersStats[
         [
+            'year',
             'name',
+            'pos',
             'games',
-            'icetime',
+            'time/g',
             "points",
             "goals",
-            "1stAssists",
-            "2ndAssists",
+            "1stA",
+            "2ndA",
+            "points/g",
             "points/60",
             'score/60',
-            'onIce_xGoals%',
-            'offIce_xGoals%',
+            'on_xGoals%',
+            'off_xGoals%',
+            'onFxGoals',
+            'onFgoals',
+            'onAxGoals',
+            'onAgoals',
             # 'onIce_corsi%',
             # 'offIce_corsi%',
             # 'onIce_fenwick%',
@@ -150,10 +192,36 @@ def getNationStats(year: int, nationality:str='fin', situation:str='all'):
         ]
     ]
 
-    nationStats = nationStats.loc[nationStats['games'] >= 10]
+    skatersStats = skatersStats.loc[skatersStats['games'] >= 10]
 
-    return nationStats
+    return skatersStats
 
+def rename_columns(df):
+    subs = [
+        [r'^I_F_', ''],
+        [r'[oO]nIce', 'on'],
+        [r'[oO]ffIce', 'off'],
+        [r'_per_', '/'],
+        [r'primary', '1st'],
+        [r'secondary', '2nd'],
+        [r'games_played', 'games'],
+        [r'Percentage', '%'],
+        [r'Assists', 'A'],
+        [r'position', 'pos'],
+        [r'season', 'year'],
+        [r'_F_', 'F'],
+        [r'_A_', 'A'],
+    ] 
+
+    newColumns = {}
+    for name in df.columns.values:
+        newName = name
+        for sub in subs:
+            newName = re.sub(sub[0], sub[1], newName)
+
+        newColumns[name] = newName
+
+    return df.rename(columns=newColumns)
 
 def update_player_lookup():
     if not os.path.exists(MP_ROOT):
@@ -221,22 +289,3 @@ def formatToMinutes(seconds):
     minutes, seconds = divmod(seconds, 60)
     return f'{minutes:02}:{seconds:02}'
 
-def rename_columns(df):
-    subs = [
-        [r'^I_F_', ''],
-        [r'_per_', '/'],
-        [r'primary', '1st'],
-        [r'secondary', '2nd'],
-        [r'games_played', 'games'],
-        [r'Percentage', '%']
-    ] 
-
-    newColumns = {}
-    for name in df.columns.values:
-        newName = name
-        for sub in subs:
-            newName = re.sub(sub[0], sub[1], newName)
-
-        newColumns[name] = newName
-
-    return df.rename(columns=newColumns)
