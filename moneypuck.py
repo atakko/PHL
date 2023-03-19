@@ -38,9 +38,10 @@ def add_parser(subparsers):
     mp_parser.add_argument("-y", "--year", nargs='+', type=int, action='store', dest="year", default=utils.current_nhl_year(), help="Target year")
     mp_parser.add_argument("-s", "--situation", type=str, dest="situation", default='all', help="On-ice situation: all, 5on5...")
     mp_parser.add_argument("-n", "--nation", type=str, dest="nation", default='fin', help="Nation, e.g. fin, swe, can...")
+    mp_parser.add_argument("-t", "--team", type=str, dest="team", default='all', help="Team, e.g. col, fla, cbj")
     mp_parser.add_argument("-p", "--player", type=int, dest="player", help="Player ID")
-    mp_parser.add_argument("-t", "--take", type=int, dest="take", help="Number of players")
-    mp_parser.add_argument("-c", "--column", type=str, dest="sortColumn", help="The column rows are sorted by")
+    mp_parser.add_argument("-l", "--limit", type=int, dest="limit", help="limit of players")
+    mp_parser.add_argument("-c", "--column", type=str, dest="sortColumn", default='points', help="The column rows are sorted by")
     mp_parser.add_argument("-a", "--ascending", type=bool, default=False, dest="sortAscending", help="Sort ascending")
     mp_parser.add_argument("-g", "--group", type=str, dest="groupBy", help="Group by")
     mp_parser.set_defaults(func=mp_command)
@@ -66,8 +67,12 @@ def mp_command(args):
         stats = getSkatersStats(args.player, args.year, nationality=args.nation, situation=args.situation)
         with pd.option_context('display.precision', 3):
             print(stats)
+    elif args.team != 'all':
+        teamStats = getTeamStats(args.year, team=args.team, situation=args.situation)
+        with pd.option_context('display.precision', 3):
+            print(teamStats)
     else:
-        nationStats = getNationStats(args.year, nationality=args.nation, situation=args.situation)
+        nationStats = getNationStats(args.year, nationality=args.nation, sortColumn=args.sortColumn, situation=args.situation)
         with pd.option_context('display.precision', 3):
             print(nationStats)
 
@@ -80,9 +85,17 @@ def getPlayer(id: int):
 def getNationPlayers(nationality:str):
     nationality = nationality.upper()
     df = pd.read_csv(MP_ROOT + "allPlayersLookup.csv", index_col="playerId")
+    if nationality == 'ALL':
+        players = df
+        return players
     players = df[df["nationality"] == nationality]
     return players
 
+def getTeamPlayers(team:str):
+    team = team.upper()
+    df = pd.read_csv(MP_ROOT + "allPlayersLookup.csv", index_col="playerId")
+    players = df[df["team"] == team]
+    return players
 
 def getRawSkatersStats(year: int):
     df = pd.read_csv(MP_ROOT + f"skaters-{year}.csv", index_col="playerId")
@@ -90,19 +103,23 @@ def getRawSkatersStats(year: int):
     #     print(x)
     return df
 
-def getNationStats(year: int|List[int], nationality:str='fin', situation:str='all'):
+def getNationStats(year: int|List[int], nationality:str='fin', sortColumn='points', situation:str='all'):
     players = getNationPlayers(nationality)
     playerIds = players.index.to_list()
-    return getSkatersStats(playerIds, year, nationality, situation)
+    return getSkatersStats(playerIds, year, sortColumn=sortColumn, situation=situation)
+
+def getTeamStats(year: int|List[int], team:str, sortColumn='points', situation:str='all'):
+    players = getTeamPlayers(team)
+    playerIds = players.index.to_list()
+    return getSkatersStats(playerIds, year, sortColumn=sortColumn, situation=situation)
 
 
-def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:str='fin', situation:str='all'):
+def getSkatersStats(playerIds: int|List[int], years: int|List[int], sortColumn='points', limit=40, situation:str='all'):
     if isinstance(playerIds, int):
         playerIds = [playerIds]
     if isinstance(years, int):
         years = [years]
 
-    sortColumn = 'score_per_60'
     sortAscending = False
     multiYear = False
 
@@ -148,7 +165,6 @@ def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:
     skatersStats["points_per_60"] = skatersStats["I_F_points"] / (skatersStats["icetime"] / (60 * 60))
     skatersStats["score_per_60"] = skatersStats["gameScore"] / (skatersStats["icetime"] / (60 * 60))
 
-    skatersStats = skatersStats.sort_values(sortColumn, ascending=sortAscending)
 
     total_points = skatersStats["I_F_points"].sum()
     total_score = skatersStats["gameScore"].sum()
@@ -163,6 +179,8 @@ def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:
     )
 
     skatersStats = rename_columns(skatersStats)
+    print(f'WTF {sortColumn}')
+    skatersStats = skatersStats.sort_values(sortColumn, ascending=sortAscending)
     skatersStats = skatersStats.astype({'points': 'int32', 'goals': 'int32', '1stA': 'int32', '2ndA': 'int32'})
 
     skatersStats = skatersStats[
@@ -170,7 +188,7 @@ def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:
             'year',
             'name',
             'pos',
-            'games',
+            'gp',
             'time/g',
             "points",
             "goals",
@@ -192,7 +210,8 @@ def getSkatersStats(playerIds: int|List[int], years: int|List[int], nationality:
         ]
     ]
 
-    skatersStats = skatersStats.loc[skatersStats['games'] >= 10]
+    skatersStats = skatersStats.loc[skatersStats['gp'] >= 10]
+    skatersStats = skatersStats.head(limit)
 
     return skatersStats
 
@@ -204,7 +223,7 @@ def rename_columns(df):
         [r'_per_', '/'],
         [r'primary', '1st'],
         [r'secondary', '2nd'],
-        [r'games_played', 'games'],
+        [r'games_played', 'gp'],
         [r'Percentage', '%'],
         [r'Assists', 'A'],
         [r'position', 'pos'],
